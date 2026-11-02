@@ -1,0 +1,92 @@
+
+name: MR7 Talabaty APK Builder
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '**.zip'
+      - '.github/workflows/build-apk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP_FILE="$(find . -maxdepth 1 -type f -iname '*.zip' | head -n 1)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No ZIP archive found."
+            exit 1
+          fi
+
+          mkdir extracted
+          unzip -q "$ZIP_FILE" -d extracted
+
+          echo "Project files:"
+          find extracted -maxdepth 5 -type f | sort | head -n 250
+
+          FLUTTER_FILE="$(find extracted -name pubspec.yaml -print -quit)"
+          GRADLE_FILE="$(find extracted \( -name gradlew -o -name gradlew.bat \) -print -quit)"
+
+          if [ -n "$FLUTTER_FILE" ]; then
+            echo "PROJECT_TYPE=flutter" >> "$GITHUB_ENV"
+            echo "PROJECT_ROOT=$(dirname "$FLUTTER_FILE")" >> "$GITHUB_ENV"
+          elif [ -n "$GRADLE_FILE" ]; then
+            echo "PROJECT_TYPE=gradle" >> "$GITHUB_ENV"
+            echo "PROJECT_ROOT=$(dirname "$GRADLE_FILE")" >> "$GITHUB_ENV"
+          else
+            echo "Could not identify a Flutter or Gradle project."
+            exit 1
+          fi
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build Flutter APK
+        if: env.PROJECT_TYPE == 'flutter'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Run Flutter build
+        if: env.PROJECT_TYPE == 'flutter'
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          flutter pub get
+          flutter build apk --release
+
+      - name: Build Android APK
+        if: env.PROJECT_TYPE == 'gradle'
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
+
+      - name: Collect APK files
+        shell: bash
+        run: |
+          mkdir -p apk-output
+          find extracted -type f -name '*.apk' -exec cp {} apk-output/ \;
+          test -n "$(find apk-output -name '*.apk' -print -quit)"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MR7-Talabaty-APK
+          path: apk-output/*.apk
+          if-no-files-found: error
+          
